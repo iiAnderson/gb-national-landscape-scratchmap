@@ -1,0 +1,10 @@
+# Copy to terraform.tfvars and edit. The bucket name must be globally unique.
+
+project_name   = "robbiea-parks"
+region         = "eu-west-1"
+domain_name    = "parks.robbiea.co.uk"
+hosted_zone_id = "Z000000000000000000000"
+
+tags = {
+  Owner = "me"
+}

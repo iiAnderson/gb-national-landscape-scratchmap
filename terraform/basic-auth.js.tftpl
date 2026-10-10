@@ -1,0 +1,12 @@
+function handler(event) {
+  var auth = event.request.headers.authorization;
+  var expected = "Basic ${credentials}";
+  if (!auth || auth.value !== expected) {
+    return {
+      statusCode: 401,
+      statusDescription: "Unauthorized",
+      headers: { "www-authenticate": { value: 'Basic realm="parks"' } }
+    };
+  }
+  return event.request;
+}
