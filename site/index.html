@@ -232,7 +232,7 @@ let selected = null;
 let filter = 'all';
 let country = 'all';
 let canWrite = true;
-let db = null, mode = 'local';
+let mode = 'local';
 
 function loadLocal(){ try { return JSON.parse(localStorage.getItem(LSKEY) || '{}') || {}; } catch(e){ return {}; } }
 function saveLocal(){ try { localStorage.setItem(LSKEY, JSON.stringify(visits)); } catch(e){} }
@@ -526,50 +526,65 @@ async function updateVisit(id, patch){
   visits[id] = {...visits[id], ...patch};
   await persist(id);
 }
-async function persist(id){
-  if (mode === 'db'){
+const REMOTE = '/data/state.json';
+async function pull(){
+  const r = await fetch(REMOTE, {cache:'no-store'});
+  if (!r.ok) throw new Error('GET ' + r.status);
+  const j = await r.json();
+  return (j && j.visits) || {};
+}
+async function push(obj){
+  const body = JSON.stringify({visits:obj, updated:new Date().toISOString()});
+  const buf = new TextEncoder().encode(body);
+  const hash = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', buf))).map(b => b.toString(16).padStart(2,'0')).join('');
+  // CloudFront signs the write to S3; for PUT it needs the body's SHA-256 from the client.
+  const r = await fetch(REMOTE, {method:'PUT', body, headers:{'content-type':'application/json', 'x-amz-content-sha256':hash}});
+  if (!r.ok) throw new Error('PUT ' + r.status);
+}
+// Saves run one at a time, and each re-reads the file first so a change made on
+// another device is merged rather than overwritten.
+let queue = Promise.resolve();
+function persist(id){
+  saveLocal();
+  if (mode !== 'remote') return Promise.resolve();
+  queue = queue.then(async () => {
     try {
-      const ref = db.doc('visits/' + id);
-      if (visits[id]) await ref.set({done:true, date:visits[id].date || '', note:visits[id].note || ''});
-      else await ref.delete();
+      const latest = await pull();
+      if (visits[id]) latest[id] = visits[id]; else delete latest[id];
+      await push(latest);
+      visits = latest; saveLocal(); renderState();
+      setStatus('Saved - shared across your devices.');
     } catch(err){
-      if (err && err.code === 'invalid_argument'){ canWrite = false; setStatus('This log is read-only for you.'); renderState(); }
-      else setStatus('Could not save that change. Check your connection and try again.');
+      setStatus('Could not save that change. Check your connection and try again.');
     }
-  } else saveLocal();
+  });
+  return queue;
 }
 function setStatus(t){ $('status').textContent = t; }
 
+async function refresh(){
+  try { visits = await pull(); saveLocal(); renderState(); } catch(e){}
+}
 async function connect(){
   visits = loadLocal();
   renderState();
   setStatus('Saved in this browser only.');
-  const c = window.claude;
-  if (!c || typeof c.use !== 'function') return;
-  let d = null;
-  try { d = await c.use('db'); } catch(e){ d = null; }
-  if (!d) return;
-  let u = null; try { u = await c.use('user'); } catch(e){}
-  let owner = true;
-  if (u){ try { owner = await u.isOwner(); } catch(e){} }
-  db = d; mode = 'db'; canWrite = owner;
-  const local = {...visits};
-  let first = true;
-  db.collection('visits').onSnapshot(snap => {
-    const next = {};
-    snap.docs.forEach(s => { const b = s.data(); if (b && b.done) next[s.id] = {date: b.date || '', note: b.note || ''}; });
-    if (first){
-      first = false;
-      // carry over ticks made before the shared log was reachable
-      if (canWrite && snap.empty && Object.keys(local).length){
-        Object.keys(local).forEach(async id => { if (byId[id]) { try { await db.doc('visits/' + id).set({done:true, date:local[id].date || '', note:local[id].note || ''}); } catch(e){} } });
-        Object.assign(next, local);
-      }
+  try {
+    const remote = await pull();
+    mode = 'remote';
+    if (!Object.keys(remote).length && Object.keys(visits).length){
+      // first visit after sharing was turned on: carry over what this browser already has
+      const carry = {}; Object.keys(visits).forEach(id => { if (byId[id]) carry[id] = visits[id]; });
+      await push(carry);
+    } else {
+      visits = remote; saveLocal();
     }
-    visits = next;
     renderState();
-  }, () => { setStatus('Lost the connection to your saved log. Reload to try again.'); });
-  setStatus(canWrite ? 'Synced to your account — ticks follow you across devices.' : 'Viewing a shared log (read-only).');
+    setStatus('Synced - ticks follow you across devices.');
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
+  } catch(e){
+    setStatus('Could not reach the shared log - saving in this browser only.');
+  }
 }
 
 new ResizeObserver(() => applyView()).observe(svg);

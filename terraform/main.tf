@@ -184,6 +184,25 @@ resource "aws_cloudfront_distribution" "site" {
     }
   }
 
+  # The shared selections file. The page GETs and PUTs it directly: CloudFront
+  # signs the write to S3 with the origin access control, so no compute is
+  # involved. Never cached, and behind the same password as everything else.
+  ordered_cache_behavior {
+    path_pattern               = "/data/state.json"
+    target_origin_id           = "s3-${var.project_name}"
+    viewer_protocol_policy     = "https-only"
+    allowed_methods            = ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"]
+    cached_methods             = ["GET", "HEAD"]
+    compress                   = true
+    cache_policy_id            = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad" # CachingDisabled
+    response_headers_policy_id = aws_cloudfront_response_headers_policy.site.id
+
+    function_association {
+      event_type   = "viewer-request"
+      function_arn = aws_cloudfront_function.basic_auth.arn
+    }
+  }
+
   restrictions {
     geo_restriction { restriction_type = "none" }
   }
@@ -211,6 +230,36 @@ data "aws_iam_policy_document" "site" {
       variable = "AWS:SourceArn"
       values   = [aws_cloudfront_distribution.site.arn]
     }
+  }
+
+  # Write access is limited to the one state object.
+  statement {
+    sid       = "AllowCloudFrontWriteState"
+    actions   = ["s3:PutObject"]
+    resources = ["${aws_s3_bucket.site.arn}/data/state.json"]
+
+    principals {
+      type        = "Service"
+      identifiers = ["cloudfront.amazonaws.com"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "AWS:SourceArn"
+      values   = [aws_cloudfront_distribution.site.arn]
+    }
+  }
+}
+
+# Seeded once so the first read is a 200; the page owns it after that.
+resource "aws_s3_object" "state" {
+  bucket       = aws_s3_bucket.site.id
+  key          = "data/state.json"
+  content      = jsonencode({ visits = {} })
+  content_type = "application/json"
+
+  lifecycle {
+    ignore_changes = [content, etag, content_base64, source_hash, version_id]
   }
 }
 

@@ -10,7 +10,7 @@ cd "$(dirname "$0")"
 BUCKET="${SITE_BUCKET:-$(terraform -chdir=terraform output -raw bucket_name)}"
 DISTRIBUTION="${DISTRIBUTION_ID:-$(terraform -chdir=terraform output -raw distribution_id)}"
 
-aws s3 sync site/ "s3://$BUCKET/" --delete
+aws s3 sync site/ "s3://$BUCKET/" --delete --exclude "data/*"
 echo "deployed to s3://$BUCKET/"
 
 # The page has an hour-long TTL, so without this a deploy is invisible for up
